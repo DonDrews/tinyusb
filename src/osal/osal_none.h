@@ -148,7 +148,9 @@ static inline bool osal_queue_receive(osal_queue_t qhdl, void* data)
   return success;
 }
 
-static inline bool osal_queue_send(osal_queue_t qhdl, void const * data, bool in_isr)
+#pragma GCC push_options
+#pragma GCC optimize ("O0")
+static bool osal_queue_send(osal_queue_t qhdl, void const * data, bool in_isr)
 {
   if (!in_isr) {
     _osal_q_lock(qhdl);
@@ -160,10 +162,14 @@ static inline bool osal_queue_send(osal_queue_t qhdl, void const * data, bool in
     _osal_q_unlock(qhdl);
   }
 
+  if(!success)
+	  printf("p\n");
+
   TU_ASSERT(success);
 
   return success;
 }
+#pragma GCC pop_options
 
 static inline bool osal_queue_empty(osal_queue_t qhdl)
 {

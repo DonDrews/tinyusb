@@ -7,6 +7,7 @@
   *
   * <h2><center>&copy; COPYRIGHT(c) 2016 STMicroelectronics</center></h2>
   * <h2><center>&copy; parts COPYRIGHT(c) N Conrad</center></h2>
+  * <h2><center>&copy; parts COPYRIGHT(c) 2022 Donovan Drews</center></h2>
   *
   * Redistribution and use in source and binary forms, with or without modification,
   * are permitted provided that the following conditions are met:
@@ -267,13 +268,34 @@ static inline __IO uint16_t* pcd_ep_rx_cnt_ptr(USB_TypeDef * USBx, uint32_t bEpN
 
 static inline void pcd_set_ep_tx_cnt(USB_TypeDef * USBx,  uint32_t bEpNum, uint32_t wCount)
 {
-  *pcd_ep_tx_cnt_ptr(USBx, bEpNum) = (uint16_t)wCount;
+	*pcd_ep_tx_cnt_ptr(USBx, bEpNum) = (uint16_t)wCount;
 }
 
 static inline void pcd_set_ep_rx_cnt(USB_TypeDef * USBx,  uint32_t bEpNum, uint32_t wCount)
 {
   __IO uint16_t *pdwReg = pcd_ep_rx_cnt_ptr((USBx),(bEpNum));
   pcd_set_ep_cnt_rx_reg(pdwReg, wCount);
+}
+
+//this is used when double buffering, and the rx buffer must be treated as a tx buffer
+static inline void pcd_set_ep_tx_iso_cnt(USB_TypeDef * USBx,  uint32_t bEpNum, uint32_t bufNum, uint32_t wCount)
+{
+	if(bufNum)
+		*pcd_ep_rx_cnt_ptr(USBx, bEpNum) = (uint16_t)wCount;
+	else
+		*pcd_ep_tx_cnt_ptr(USBx, bEpNum) = (uint16_t)wCount;
+}
+
+//this is used when double buffering, and the tx buffer must be treated as an rx buffer
+static inline void pcd_set_ep_rx_iso_cnt(USB_TypeDef * USBx,  uint32_t bEpNum, uint32_t bufNum, uint32_t wCount)
+{
+	__IO uint16_t *pdwReg;
+	if(bufNum)
+		pdwReg = pcd_ep_rx_cnt_ptr((USBx),(bEpNum));
+	else
+		pdwReg = pcd_ep_tx_cnt_ptr((USBx),(bEpNum));
+
+	pcd_set_ep_cnt_rx_reg(pdwReg, wCount);
 }
 
 /**
@@ -335,6 +357,24 @@ static inline uint32_t pcd_get_ep_rx_status(USB_TypeDef * USBx,  uint32_t bEpNum
   return (regVal & USB_EPRX_STAT) >> (12u);
 } /* pcd_get_ep_rx_status */
 
+
+/**
+  * @brief  Reads DTOG_RX / DTOG_TX bit in the endpoint register.
+  * @param  USBx USB peripheral instance register address.
+  * @param  bEpNum Endpoint Number.
+  * @retval None
+  */
+static inline uint32_t pcd_read_rx_dtog(USB_TypeDef * USBx,  uint32_t bEpNum)
+{
+  uint32_t regVal = pcd_get_endpoint(USBx, bEpNum);
+  return (regVal & USB_EP_DTOG_RX) != 0;
+}
+
+static inline uint32_t pcd_read_tx_dtog(USB_TypeDef * USBx,  uint32_t bEpNum)
+{
+  uint32_t regVal = pcd_get_endpoint(USBx, bEpNum);
+  return (regVal & USB_EP_DTOG_TX) != 0;
+}
 
 /**
   * @brief  Toggles DTOG_RX / DTOG_TX bit in the endpoint register.

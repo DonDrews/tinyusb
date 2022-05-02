@@ -20,7 +20,7 @@ if __name__ == '__main__':
     else:
         device ='default'
 
-    myrecording = sd.rec(int(duration * fs), samplerate=fs, channels=4, dtype='int16', device=device)
+    myrecording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16', device=device)
     print('Waiting...')
     sd.wait()  # Wait until recording is finished
     print('Done!')

@@ -6,6 +6,7 @@
  * Portions:
  * Copyright (c) 2016 STMicroelectronics
  * Copyright (c) 2019 Ha Thach (tinyusb.org)
+ * Copyright (c) 2022 Donovan Drews
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -526,7 +527,24 @@ static void dcd_ep_ctr_rx_handler(uint32_t wIstr)
       else
 #endif
       {
-        dcd_read_packet_memory(&(xfer->buffer[xfer->queued_len]), *pcd_ep_rx_address_ptr(USB,EPindex), count);
+    	//when in isochronous mode, the hardware will flip the DTOG bit before calling this interrupt
+    	//read from the current application buffer, that just flipped from the peripheral
+    	uint16_t srcaddr;
+    	if((wEPRegVal & USB_EP_T_FIELD) == USB_EP_ISOCHRONOUS)
+    	{
+    		//DTOG indicates which buffer is in use by the USB peripheral
+    		//read from the opposite
+    		if(wEPRegVal & USB_EP_DTOG_RX)
+    			srcaddr = *pcd_ep_tx_address_ptr(USB,EPindex);
+    		else
+    			srcaddr = *pcd_ep_rx_address_ptr(USB,EPindex);
+    	}
+    	else
+    	{
+    		srcaddr = *pcd_ep_rx_address_ptr(USB,EPindex);
+    	}
+
+        dcd_read_packet_memory(&(xfer->buffer[xfer->queued_len]), srcaddr, count);
       }
 
       xfer->queued_len = (uint16_t)(xfer->queued_len + count);
@@ -719,6 +737,8 @@ static uint16_t dcd_pma_alloc(uint8_t ep_addr, size_t length)
   epXferCtl->pma_alloc_size = length;
   //TU_LOG2("dcd_pma_alloc(%x,%x)=%x\r\n",ep_addr,length,addr);
 
+  //this variable was never incremented originally; bug?
+  open_ep_count++;
   return addr;
 }
 
@@ -761,11 +781,10 @@ bool dcd_edpt_open (uint8_t rhport, tusb_desc_endpoint_t const * p_endpoint_desc
   uint8_t const epnum = tu_edpt_number(p_endpoint_desc->bEndpointAddress);
   uint8_t const dir   = tu_edpt_dir(p_endpoint_desc->bEndpointAddress);
   const uint16_t epMaxPktSize = tu_edpt_packet_size(p_endpoint_desc);
-  uint16_t pma_addr;
+  uint16_t pma_addr, pma_addr0, pma_addr1;
   uint32_t wType;
   
-  // Isochronous not supported (yet), and some other driver assumptions.
-  TU_ASSERT(p_endpoint_desc->bmAttributes.xfer != TUSB_XFER_ISOCHRONOUS);
+  // some other driver assumptions.
   TU_ASSERT(epnum < MAX_EP_COUNT);
 
   // Set type
@@ -773,11 +792,10 @@ bool dcd_edpt_open (uint8_t rhport, tusb_desc_endpoint_t const * p_endpoint_desc
   case TUSB_XFER_CONTROL:
     wType = USB_EP_CONTROL;
     break;
-#if (0)
-  case TUSB_XFER_ISOCHRONOUS: // FIXME: Not yet supported
+
+  case TUSB_XFER_ISOCHRONOUS:
     wType = USB_EP_ISOCHRONOUS;
     break;
-#endif
 
   case TUSB_XFER_BULK:
     wType = USB_EP_CONTROL;
@@ -797,21 +815,60 @@ bool dcd_edpt_open (uint8_t rhport, tusb_desc_endpoint_t const * p_endpoint_desc
   // or being double-buffered (bulk endpoints)
   pcd_clear_ep_kind(USB,0);
 
-  pma_addr = dcd_pma_alloc(p_endpoint_desc->bEndpointAddress, epMaxPktSize);
-
-  if(dir == TUSB_DIR_IN)
+  if(wType == USB_EP_ISOCHRONOUS)
   {
-    *pcd_ep_tx_address_ptr(USB, epnum) = pma_addr;
-    pcd_set_ep_tx_cnt(USB, epnum, epMaxPktSize);
-    pcd_clear_tx_dtog(USB, epnum);
-    pcd_set_ep_tx_status(USB,epnum,USB_EP_TX_NAK);
+	  //if isochronous, we need to allocate both the tx (0) and rx (1) buffers for double buffering,
+	  //as well as setting configuration bits for both
+
+	  //it is up to the application to open only a single isochronous endpoint per epnum
+	  pma_addr0 = dcd_pma_alloc(p_endpoint_desc->bEndpointAddress, epMaxPktSize << 1);
+	  pma_addr1 = pma_addr0 + epMaxPktSize;
+
+	  *pcd_ep_tx_address_ptr(USB, epnum) = pma_addr0;
+	  *pcd_ep_rx_address_ptr(USB, epnum) = pma_addr1;
+
+	  if(dir == TUSB_DIR_IN)
+	  {
+		  pcd_set_ep_tx_iso_cnt(USB, epnum, 0, epMaxPktSize);
+		  pcd_set_ep_tx_iso_cnt(USB, epnum, 1, epMaxPktSize);
+		  pcd_clear_tx_dtog(USB, epnum);
+
+		  //isochronous endpoints cannot be in STALL or NAK states
+		  //disable until a real transmission takes place
+		  pcd_set_ep_tx_status(USB, epnum, USB_EP_TX_DIS);
+		  pcd_set_ep_rx_status(USB, epnum, USB_EP_RX_DIS);
+	  }
+	  else
+	  {
+		  pcd_set_ep_rx_iso_cnt(USB, epnum, 0, epMaxPktSize);
+		  pcd_set_ep_rx_iso_cnt(USB, epnum, 1, epMaxPktSize);
+		  pcd_clear_rx_dtog(USB, epnum);
+
+		  //isochronous endpoints cannot be in STALL or NAK states
+		  //disable until a real transmission takes place
+		  pcd_set_ep_tx_status(USB, epnum, USB_EP_TX_DIS);
+		  pcd_set_ep_rx_status(USB,epnum,USB_EP_RX_DIS);
+	  }
   }
   else
   {
-    *pcd_ep_rx_address_ptr(USB, epnum) = pma_addr;
-    pcd_set_ep_rx_cnt(USB, epnum, epMaxPktSize);
-    pcd_clear_rx_dtog(USB, epnum);
-    pcd_set_ep_rx_status(USB, epnum, USB_EP_RX_NAK);
+	  //otherwise, only allocate and set bits associated with the direction
+	  pma_addr = dcd_pma_alloc(p_endpoint_desc->bEndpointAddress, epMaxPktSize);
+
+	  if(dir == TUSB_DIR_IN)
+	  {
+	    *pcd_ep_tx_address_ptr(USB, epnum) = pma_addr;
+	    pcd_set_ep_tx_cnt(USB, epnum, epMaxPktSize);
+	    pcd_clear_tx_dtog(USB, epnum);
+	    pcd_set_ep_tx_status(USB,epnum,USB_EP_TX_NAK);
+	  }
+	  else
+	  {
+	    *pcd_ep_rx_address_ptr(USB, epnum) = pma_addr;
+	    pcd_set_ep_rx_cnt(USB, epnum, epMaxPktSize);
+	    pcd_clear_rx_dtog(USB, epnum);
+	    pcd_set_ep_rx_status(USB, epnum, USB_EP_RX_NAK);
+	  }
   }
 
   xfer_ctl_ptr(epnum, dir)->max_packet_size = epMaxPktSize;
@@ -850,8 +907,7 @@ void dcd_edpt_close (uint8_t rhport, uint8_t ep_addr)
   dcd_pma_free(ep_addr);
 }
 
-// Currently, single-buffered, and only 64 bytes at a time (max)
-
+// Currently, only 64 bytes at a time (max)
 static void dcd_transmit_packet(xfer_ctl_t * xfer, uint16_t ep_ix)
 {
   uint16_t len = (uint16_t)(xfer->total_len - xfer->queued_len);
@@ -860,7 +916,23 @@ static void dcd_transmit_packet(xfer_ctl_t * xfer, uint16_t ep_ix)
   {
     len = xfer->max_packet_size;
   }
-  uint16_t oldAddr = *pcd_ep_tx_address_ptr(USB,ep_ix);
+  uint16_t oldAddr;
+  //if the endpoint is isochronous, we need to find which buffer is active
+  uint32_t wType = pcd_get_eptype(USB, ep_ix);
+  uint32_t dtog = pcd_read_tx_dtog(USB, ep_ix);
+  if(wType == USB_EP_ISOCHRONOUS)
+  {
+	  //DTOG indicated which buffer the peripheral is using
+	  //write to the opposite
+	  if(dtog)
+		  oldAddr = *pcd_ep_tx_address_ptr(USB, ep_ix);
+	  else
+		  oldAddr = *pcd_ep_rx_address_ptr(USB, ep_ix);
+  }
+  else
+  {
+	  oldAddr = *pcd_ep_tx_address_ptr(USB,ep_ix);
+  }
 
 #if 0 // TODO support dcd_edpt_xfer_fifo API
   if (xfer->ff)
@@ -874,7 +946,17 @@ static void dcd_transmit_packet(xfer_ctl_t * xfer, uint16_t ep_ix)
   }
   xfer->queued_len = (uint16_t)(xfer->queued_len + len);
 
-  pcd_set_ep_tx_cnt(USB,ep_ix,len);
+  //if isochronous, set count only for active buffer
+  //use the dtog value from before write, since it might have changed if a transaction
+  //completed during writing
+  if(wType == USB_EP_ISOCHRONOUS)
+  {
+	  pcd_set_ep_tx_iso_cnt(USB, ep_ix, !dtog, len);
+  }
+  else
+  {
+	  pcd_set_ep_tx_cnt(USB,ep_ix,len);
+  }
   pcd_set_ep_tx_status(USB, ep_ix, USB_EP_TX_VALID);
 }
 
@@ -900,11 +982,22 @@ bool dcd_edpt_xfer (uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t 
     {
         xfer->buffer = (uint8_t*)_setup_packet;
     }
+    uint32_t recv_size;
     if(total_bytes > xfer->max_packet_size)
     {
-      pcd_set_ep_rx_cnt(USB,epnum,xfer->max_packet_size);
+      recv_size = xfer->max_packet_size;
     } else {
-      pcd_set_ep_rx_cnt(USB,epnum,total_bytes);
+      recv_size = total_bytes;
+    }
+    if(pcd_get_eptype(USB, epnum) == USB_EP_ISOCHRONOUS)
+    {
+    	uint32_t dtog = pcd_read_rx_dtog(USB, epnum);
+    	//we want to change the USB peripheral's buffer count, not the application's
+    	pcd_set_ep_rx_iso_cnt(USB, epnum, dtog, recv_size);
+    }
+    else
+    {
+    	pcd_set_ep_rx_cnt(USB, epnum, recv_size);
     }
     pcd_set_ep_rx_status(USB, epnum, USB_EP_RX_VALID);
   }
@@ -951,6 +1044,9 @@ bool dcd_edpt_xfer_fifo (uint8_t rhport, uint8_t ep_addr, tu_fifo_t * ff, uint16
 void dcd_edpt_stall (uint8_t rhport, uint8_t ep_addr)
 {
   (void)rhport;
+
+  //isochronous endpoints cannot be stalled
+  TU_ASSERT(pcd_get_eptype(USB, ep_addr & 0x7F) != USB_EP_ISOCHRONOUS);
 
   if (ep_addr & 0x80)
   { // IN
