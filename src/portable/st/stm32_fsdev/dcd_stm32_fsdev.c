@@ -6,7 +6,7 @@
  * Portions:
  * Copyright (c) 2016 STMicroelectronics
  * Copyright (c) 2019 Ha Thach (tinyusb.org)
- * Copyright (c) 2022 Donovan Drews
+ * Copyright (c) 2022 Donovan Drews (donovancarldrews@gmail.com)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -168,8 +168,8 @@ typedef struct
   uint16_t total_len;
   uint16_t queued_len;
   uint16_t pma_ptr;
-  uint8_t max_packet_size;
-  uint8_t pma_alloc_size;
+  uint16_t max_packet_size;
+  uint16_t pma_alloc_size;
 } xfer_ctl_t;
 
 static xfer_ctl_t xfer_status[MAX_EP_COUNT][2];
@@ -943,6 +943,14 @@ static void dcd_transmit_packet(xfer_ctl_t * xfer, uint16_t ep_ix)
 #endif
   {
     dcd_write_packet_memory(oldAddr, &(xfer->buffer[xfer->queued_len]), len);
+  }
+
+  if(wType == USB_EP_ISOCHRONOUS && len > 200) {
+		// The GCC optimizer will combine access to 32-bit sizes if we let it. Force
+		// it volatile so that it won't do that.
+		__IO uint16_t *pdwVal;
+		pdwVal = &pma[PMA_STRIDE*(oldAddr>>1)];
+		pdwVal[100] = (dtog) ? 0xAAAA : 0xBBBB;
   }
   xfer->queued_len = (uint16_t)(xfer->queued_len + len);
 
