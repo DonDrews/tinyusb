@@ -945,13 +945,6 @@ static void dcd_transmit_packet(xfer_ctl_t * xfer, uint16_t ep_ix)
     dcd_write_packet_memory(oldAddr, &(xfer->buffer[xfer->queued_len]), len);
   }
 
-  if(wType == USB_EP_ISOCHRONOUS && len > 200) {
-		// The GCC optimizer will combine access to 32-bit sizes if we let it. Force
-		// it volatile so that it won't do that.
-		__IO uint16_t *pdwVal;
-		pdwVal = &pma[PMA_STRIDE*(oldAddr>>1)];
-		pdwVal[100] = (dtog) ? 0xAAAA : 0xBBBB;
-  }
   xfer->queued_len = (uint16_t)(xfer->queued_len + len);
 
   //if isochronous, set count only for active buffer
